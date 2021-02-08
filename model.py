@@ -308,7 +308,7 @@ class Decoder(nn.Module):
         decoder_inputs = decoder_inputs.transpose(0, 1)
         return decoder_inputs
 
-    def parse_decoder_outputs(self, mel_outputs, gate_outputs, alignments):
+    def parse_decoder_outputs(self, mel_outputs, gate_outputs=None, alignments=None):
         """ Prepares decoder outputs for output
         PARAMS
         ------
@@ -323,10 +323,10 @@ class Decoder(nn.Module):
         alignments:
         """
         # (T_out, B) -> (B, T_out)
-        alignments = torch.stack(alignments).transpose(0, 1)
+        # alignments = torch.stack(alignments).transpose(0, 1)
         # (T_out, B) -> (B, T_out)
-        gate_outputs = torch.stack(gate_outputs).transpose(0, 1)
-        gate_outputs = gate_outputs.contiguous()
+        # gate_outputs = torch.stack(gate_outputs).transpose(0, 1)
+        # gate_outputs = gate_outputs.contiguous()
         # (T_out, B, n_mel_channels) -> (B, T_out, n_mel_channels)
         mel_outputs = torch.stack(mel_outputs).transpose(0, 1).contiguous()
         # decouple frames per step
@@ -335,7 +335,7 @@ class Decoder(nn.Module):
         # (B, T_out, n_mel_channels) -> (B, n_mel_channels, T_out)
         mel_outputs = mel_outputs.transpose(1, 2)
 
-        return mel_outputs, gate_outputs, alignments
+        return mel_outputs, None, None
 
     def decode(self, decoder_input):
         """ Decoder step using stored states, attention and memory
@@ -433,32 +433,27 @@ class Decoder(nn.Module):
 
         # BART3S-TTS - Add a parameter to check if audio requires cutting
         requires_cutting = False
-        mel_outputs, gate_outputs, alignments = [], [], []
+        mel_outputs = []
         while True:
             decoder_input = self.prenet(decoder_input)
-            mel_output, gate_output, alignment = self.decode(decoder_input)
+            mel_output, gate_output, _ = self.decode(decoder_input)
 
             mel_outputs += [mel_output.squeeze(1)]
-            gate_outputs += [gate_output]
-            alignments += [alignment]
 
             if torch.sigmoid(gate_output.data) > self.gate_threshold:
                 break
             elif len(mel_outputs) == self.max_decoder_steps:
                 print("Warning! Reached max decoder steps")
-                # BART3S-TTS - Clear CUDA cache after reaching max decoder steps to avoid out of memory errors
-                torch.cuda.empty_cache()
                 # BART3S-TTS - Add a parameter to check if audio requires cutting
                 requires_cutting = True
                 break
 
             decoder_input = mel_output
 
-        mel_outputs, gate_outputs, alignments = self.parse_decoder_outputs(
-            mel_outputs, gate_outputs, alignments)
+        mel_outputs, _, _ = self.parse_decoder_outputs(mel_outputs)
 
         # BART3S-TTS - Add a parameter to check if audio requires cutting
-        return mel_outputs, gate_outputs, alignments, requires_cutting
+        return mel_outputs, requires_cutting
 
 
 class Tacotron2(nn.Module):
@@ -525,14 +520,12 @@ class Tacotron2(nn.Module):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
         encoder_outputs = self.encoder.inference(embedded_inputs)
         # BART3S-TTS - Add a parameter to check if audio requires cutting
-        mel_outputs, gate_outputs, alignments, requires_cutting = self.decoder.inference(
-            encoder_outputs)
+        mel_outputs, requires_cutting = self.decoder.inference(encoder_outputs)
 
         mel_outputs_postnet = self.postnet(mel_outputs)
-        mel_outputs_postnet = mel_outputs + mel_outputs_postnet
+        mel_outputs_postnet = mel_outputs + self.postnet(mel_outputs)
 
         # BART3S-TTS - Add a parameter to check if audio requires cutting
-        outputs = self.parse_output(
-            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, requires_cutting])
+        outputs = self.parse_output([mel_outputs_postnet, requires_cutting])
 
         return outputs
